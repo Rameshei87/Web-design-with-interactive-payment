@@ -1,0 +1,24 @@
+#!/bin/sh
+
+# Tarka - Copyright (c) 2017 NetCraft Australia Pty Ltd
+
+function die {
+  echo "$*" 1>&2
+  exit 1
+}
+
+[ $# -eq 2 ] || die "Usage: $0 VERSION HOST"
+
+VER=$1
+HOST=$2
+TAR="tarka-$VER.tar.gz"
+RPM_DIR=RPMS
+
+[ -e $TAR ] || die "$TAR not found"
+scp $TAR root@$HOST: || die "couldn't copy $TAR to $HOST"
+ssh -t root@$HOST rpmbuild -tb $TAR --sign || die "couldn't build $TAR"
+[ -e $RPM_DIR ] || mkdir $RPM_DIR || die "couldn't mkdir $RPM_DIR"
+rsync -vaP --remove-source-files \
+  "root@$HOST:rpmbuild/RPMS/*/tarka-*-$VER-*.rpm" $RPM_DIR ||
+  die "couldn't copy RPMs back from $HOST"
+ssh root@$HOST rm -f $TAR
