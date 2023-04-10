@@ -1,0 +1,38 @@
+#!/bin/sh
+
+# Tarka - Copyright (c) 2002-2010 NetCraft Australia Pty Ltd
+
+if [ $# -ne 1 -a $# -ne 2 ]; then
+  echo "Usage: $0 version.number [tag_name]"
+  echo "Eg.: $0 2.0.0 tarka-2-0-0"
+  exit 1
+fi
+
+VER=$1
+TAG=$2
+DISTNAME="tarka-$VER"
+
+# Make sure the temp directory doesn't exist
+if [ -e $DISTNAME ]; then
+  echo "'$DISTNAME' directory exists; please remove it"
+  exit 1
+fi
+
+# Checkout either the latest tarka or the given revision.
+if [ $# -eq 1 ]; then
+  cvs export -r HEAD -d $DISTNAME tarka
+else
+  cvs export -r $TAG -d $DISTNAME tarka
+fi
+
+# Remove write access from group and other
+chmod -R go-w $DISTNAME
+
+# Update the spec file for the version we're building
+perl -pi -e "s/TARKAVERSION/$VER/" $DISTNAME/tarka.spec
+
+# Tar it up
+tar czf $DISTNAME.tar.gz --exclude test $DISTNAME
+
+# Clean up
+rm -rf $DISTNAME
