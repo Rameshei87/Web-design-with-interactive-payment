@@ -1,0 +1,209 @@
+#!/usr/bin/perl
+
+# cdr-archive - Copyright (c) 2002-2017 NetCraft Australia Pty Ltd
+
+use strict;
+use warnings;
+
+use FileHandle;
+use Carp qw(croak);
+
+sub get_commit_list {
+  my($file) = @_;
+  my $git_log_args = '--format=%H --name-only --follow';
+  my $f = FileHandle->new("(cd cdr-archive; git log $git_log_args $file) |");
+
+  my @commits;
+  my($commit, $fn);
+
+  # format of git output is:
+  # - commit id
+  # - blank line
+  # - path
+  while (<$f>) {
+
+    # commit
+    if (!/^([0-9a-f]+)$/) {
+      die "unexpected non-commit line from git log:\n$_\n";
+    }
+    $commit = $1;
+
+    # blank line
+    chomp($_ = <$f>);
+    die "unexpected non-blank line from git log:\n$_\n" if length;
+
+    # path
+    chomp($_ = <$f>);
+    die "unexpected blank line from git log" unless length;
+    $fn = $_;
+
+    # save commit and path
+    push @commits, [$commit, $fn];
+
+    last if @commits >= 30;
+  }
+
+  return \@commits;
+}
+
+sub canonify {
+  my($strip_comments) = @_;
+
+  my $canonify = "cdr-archive/tools/canonify-header";
+  if ($strip_comments) {
+    $canonify = "cdr-archive/tools/strip-comments | $canonify";
+  }
+  $canonify;
+}
+
+sub git_diff {
+  my($from, $to, $rev, $strip_comments) = @_;
+
+  my $canonify = canonify($strip_comments);
+
+  my $to_tmp = "/tmp/difftmp.$$";
+
+  system("cdr-archive/tools/canonify-header < $to > $to_tmp");
+  my $result = `(cd cdr-archive; git show $rev:$from) 2> /dev/null \\
+                  | $canonify | diff -u - $to_tmp`;
+  unlink($to_tmp) or die "couldn't unlink $to_tmp: $!\n";
+  $result;
+}
+
+sub local_diff {
+  my($from, $to, $strip_comments) = @_;
+
+  my $canonify = canonify($strip_comments);
+
+  my $to_tmp = "/tmp/difftmp.$$";
+
+  system("cdr-archive/tools/canonify-header < $to > $to_tmp");
+  my $result = `cat $from | $canonify | diff -u - $to_tmp`;
+  unlink($to_tmp) or die "couldn't unlink $to_tmp: $!\n";
+  $result;
+}
+
+sub get_shortest {
+  my(@list) = @_;
+  my($descr, $text);
+
+  for (@list) {
+    my($test_descr, $sub) = @$_;
+    my $test_text = $sub->();
+    if (!defined $text or length $test_text < length $text) {
+      $descr = $test_descr;
+      $text = $test_text;
+    }
+    print "tested $test_descr length is ", length($test_text), "\n";
+    last if length $test_text == 0;
+  }
+
+  return ($descr, $text);
+}
+
+sub ask {
+  my($prompt, $default) = @_;
+
+  my $prompt_values;
+
+  $default ||= "bad";
+
+  if ($default eq "y") {
+    $prompt_values = "Yn";
+  } elsif ($default eq "n") {
+    $prompt_values = "yN";
+  } else {
+    croak "ask called with bad default";
+  }
+
+  while (1) {
+    print "$prompt [$prompt_values] ";
+    my $answer = <STDIN>;
+    exit unless defined $answer;
+    chomp $answer;
+
+    return $default eq 'y' if $answer eq '';
+    return 1 if $answer =~ /^y$/i;
+    return 0 if $answer =~ /^n$/i;
+  }
+}
+
+sub do_file {
+  my($customer, $file, $commit, $strip_comments) = @_;
+
+  if ($commit) {
+    my $short_commit = substr($commit, 0, 6);
+    print "diff from cdr-archive/$file to $customer/$file commit $commit\n";
+    print git_diff($file, "$customer/$file", $commit, $strip_comments);
+    return;
+  }
+
+  if (!-e "cdr-archive/$file") {
+    print "cdr-archive/$file doesn't exist.\n";
+    if (ask("Move $customer/$file to cdr-archive/$file?", "n")) {
+      rename("$customer/$file", "cdr-archive/$file")
+          or die "couldn't rename $customer/$file to cdr-archive/$file: $!\n";
+    } elsif (ask("Delete $customer/$file?", "n")) {
+      unlink("$customer/$file") or die "couldn't unlink $customer/$file: $!\n";
+    }
+    return;
+  }
+
+  my @tests = (
+    [ "$file local with comments",
+      sub { local_diff("cdr-archive/$file", "$customer/$file", 0) } ],
+    [ "$file local without comments",
+      sub { local_diff("cdr-archive/$file", "$customer/$file", 1) } ],
+  );
+
+  my $commits = get_commit_list($file);
+
+  for my $commit_info (@$commits) {
+    my($commit, $fn) = @$commit_info;
+    my $short_commit = substr($commit, 0, 6);
+    push(@tests,
+      [ "$fn $short_commit with comments",
+        sub { git_diff($fn, "$customer/$file", $commit, 0) } ],
+      [ "$fn $short_commit without comments",
+        sub { git_diff($fn, "$customer/$file", $commit, 1) } ],
+    );
+  }
+
+  my($descr, $text) = get_shortest(@tests);
+
+  print "$descr\n$text\n\n";
+
+  if ($text eq "") {
+    print "Removing $customer/$file\n";
+    unlink("$customer/$file") or die "couldn't unlink $customer/$file: $!\n";
+  } else {
+    if (ask("Run vimdiff?", "y")) {
+      system("vimdiff", "cdr-archive/$file", "$customer/$file");
+      if (!ask("Continue?", "y")) {
+        exit;
+      }
+    } elsif (ask("Delete $customer/$file?", "n")) {
+      unlink("$customer/$file") or die "couldn't unlink $customer/$file: $!\n";
+    }
+  }
+}
+
+unless (@ARGV >= 1 && @ARGV <= 4) {
+  die "Usage: $0 <customer_directory> [<file> [<commit> [--strip-comments]]]\n";
+}
+
+my($customer, $file, $commit, $strip_comments) = @ARGV;
+my(@files);
+
+if (!$file) {
+  chdir($customer);
+  @files = grep { $_ ne '' } split(/\s+/, `find . -type f`);
+  s/^\.\/// for @files;
+  chdir("..");
+} else {
+  @files = $file;
+}
+
+for my $file (@files) {
+  do_file($customer, $file, $commit, $strip_comments);
+}
