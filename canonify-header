@@ -1,0 +1,11 @@
+#!/usr/bin/perl -w
+
+# Tarka - Copyright (c) 2006-2010 NetCraft Australia Pty Ltd
+
+use strict;
+
+while (<>) {
+  s/^(\s*# Tarka) - Copyright.*/$1/;
+  s/^(\s*# \$Id).*/$1\$/;
+  print;
+}
